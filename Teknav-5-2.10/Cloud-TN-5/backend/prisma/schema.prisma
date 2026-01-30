@@ -1,0 +1,517 @@
+generator client {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- GLOBAL CONFIG ---
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- TENANCY & IDENTITY (A + B) ---
+
+model Tenant {
+  id                Int       @id @default(autoincrement())
+  name              String
+  domain            String?   @unique // Used for TenantContext resolution
+  status            String    @default("ACTIVE") // ACTIVE, SUSPENDED, ARCHIVED
+  planTier          String    @default("FREE") // FREE, PRO, ENTERPRISE
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  workspaces        Workspace[]
+  users             User[]
+  oidcConfigs       OidcConfig[]
+  subscriptions      Subscription[]
+  plans             Plan[]
+  auditLogs         AuditLog[]
+  entitlements      Entitlement[]
+  paywallRules       PaywallRule[]
+}
+
+model Workspace {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  name              String
+  slug              String    @unique // Used for subdomain/workspace resolution
+  defaultLocale     String    @default("en") // M0 Requirement
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  @@unique([tenantId, slug]) // B Requirement: Unique slug per tenant
+  
+  // Relations
+  articles          Article[]
+  subscribers       Subscriber[]
+  segments          Segment[]
+  campaigns         Campaign[]
+  workspaceMembers  WorkspaceMember[]
+  plans             Plan[]
+  subscriptions      Subscription[]
+  pluginInstallations PluginInstallation[]
+}
+
+// --- MEMBERSHIP & BILLING (A + B) ---
+
+model WorkspaceMember {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  userId            Int
+  
+  role              String    // OWNER, ADMIN, EDITOR, WRITER, VIEWER
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  @@unique([tenantId, workspaceId, userId]) // A Requirement: Unique membership
+  
+  // Relations
+  user              User?
+  workspace         Workspace?
+}
+
+model Plan {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int       @unique // B Requirement: Plan per Workspace (for now)
+  
+  name              String
+  priceCents        Int
+  interval          String    // MONTH, YEAR
+  featuresJson      Json       // Entitlements definitions
+  active            Boolean    @default(true)
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  subscriptions      Subscription[]
+}
+
+model Subscription {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  userId            Int       @unique(userId) // User can have 1 sub per tenant (Simplified)
+  planId            Int
+  
+  status            String    // PENDING, ACTIVE, CANCELLED, PAST_DUE, TRIALING
+  startedAt         DateTime
+  currentPeriodEnd DateTime
+  cancelAtPeriodEnd Boolean
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  user              User?
+  plan              Plan?
+  payments          Payment[]
+}
+
+model Payment {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  subscriptionId    Int
+  
+  provider          String    // STRIPE, LEMON_SQUEEZY
+  providerPaymentId  String    @unique // B Requirement: Idempotency anchor
+  
+  amountCents       Int
+  currency          String
+  
+  status            String    // SUCCESS, FAILED, PENDING
+  createdAt         DateTime  @default(now())
+  
+  // Relations
+  subscription      Subscription?
+}
+
+model BillingEvent {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  
+  providerEventId  String    // B Requirement: Idempotency Anchor
+  type              String    // checkout.completed, invoice.paid, etc.
+  
+  receivedAt        DateTime  @default(now())
+  processedAt       DateTime?
+  
+  status            String    // PROCESSED, FAILED, DUPLICATE
+  
+  rawJson           Json       // Raw Payload
+  
+  @@unique([tenantId, providerEventId]) // B Requirement: Prevent Duplicates
+  
+  // Relations
+}
+
+model Entitlement {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  userId            Int       // M3 Requirement: Entitlements per user (or workspace)
+  
+  key               String    // MEMBER, PAID_MEMBER, CAN_READ_PREMIUM, etc.
+  value             Json       // { tier: 'PRO', until: '...' }
+  
+  validFrom         DateTime  @default(now())
+  validTo           DateTime?
+  
+  @@unique([tenantId, userId, key]) // B Requirement: Deterministic
+  
+  // Relations
+}
+
+// --- CONTENT & WORKFLOW (A + D) ---
+
+model Article {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  type              String    // POST, PAGE, VIDEO, AUDIO
+  status            String    // DRAFT, SUBMITTED, READY_FOR_PUBLISH, PUBLISHED, REJECTED, ARCHIVED
+  
+  slug              String?
+  locale            String    @default("en")
+  title             String
+  excerpt           String?
+  content           String    @db.Text // M1: Store Editor Body
+  
+  publishedAt       DateTime?
+  scheduledFor       DateTime?
+  changedBy         Int       // Actor ID
+  changedAt         DateTime  @default(now())
+  deletedAt         DateTime?
+  
+  // Relations
+  versions          ArticleVersion[]
+  comments          EditorComment[]
+  translations      ArticleTranslation[]
+  tags              ArticleTags[]
+  
+  @@index([tenantId, workspaceId])
+  @@index([tenantId, workspaceId, status]) // For filtering
+}
+
+model ArticleVersion {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  articleId         Int
+  
+  versionTitle      String    // Snapshot of title
+  content           String    @db.Text // Snapshot of content
+  excerpt           String?
+  
+  createdById       Int
+  createdAt         DateTime  @default(now())
+  
+  // Relations
+  article           Article?
+}
+
+model EditorComment {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  articleId         Int
+  versionId         Int?
+  
+  anchor            String?   // D2 Requirement: Anchor for Inline Comments
+  
+  body              String    @db.Text
+  status            String    // ACTIVE, RESOLVED, DELETED
+  
+  createdBy         Int
+  createdAt         DateTime  @default(now())
+  
+  // Relations
+  article           Article?
+}
+
+model ArticleTranslation {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  articleId         Int
+  locale            String    @unique([articleId, locale]) // M1 Requirement: Locale x Article Matrix
+  
+  status            String    // DRAFT, READY_FOR_PUBLISH, PUBLISHED
+  title             String?
+  content           String    @db.Text
+  publishedAt       DateTime?
+  
+  changedBy         Int
+  changedAt         DateTime  @default(now())
+  
+  // Relations
+  article           Article?
+}
+
+model WorkflowDefinition {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  contentType       String    // ARTICLE, MEDIA, USER
+  
+  jsonDefinition    Json       // M2 Requirement: JSON State Machine
+  version           String    @default("v1")
+  active            Boolean    @default(true)
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  runs              WorkflowInstance[]
+}
+
+model WorkflowInstance {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  contentId         Int
+  definitionId      Int
+  
+  state             String    // PENDING, RUNNING, SUCCESS, FAILED
+  startedAt         DateTime
+  finishedAt        DateTime?
+  
+  // Relations
+  tasks             WorkflowTask[]
+}
+
+model WorkflowTask {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  runId             Int
+  
+  type              String    // APPROVAL, REVIEW, LEGAL, SEO, AI_SAFETY, TRANSLATION_REVIEW
+  assigneeId        Int?
+  status            String    // PENDING, ASSIGNED, APPROVED, REJECTED, SKIPPED
+  dueAt             DateTime?
+  createdAt         DateTime  @default(now())
+}
+
+// --- MEDIA (A + D) ---
+
+model File {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  name              String
+  url               String    @db.Text
+  mimeType          String
+  size              BigInt
+  uploadedBy        Int
+  metadata          Json       // { ... }
+  createdAt         DateTime  @default(now())
+  deletedAt         DateTime?
+}
+
+model MediaAsset {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  fileId            Int       @unique
+  
+  kind              String    // IMAGE, VIDEO, FILE
+  originalUrl       String    @db.Text
+  
+  altText           String?
+  caption           String?
+  tags              String[]   // D1 Requirement: Tags (Folder-like organization)
+  folder            String    @default("root")
+  metadata          Json       // { aiJobId, aiStatus, width, height, ... }
+  createdAt         DateTime  @default(now())
+  
+  // Relations
+  file              File?
+}
+
+// --- NEWSLETTER (A) ---
+
+model Subscriber {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  email             String    @unique([tenantId, workspaceId, email])
+  
+  status            String    // ACTIVE, UNSUBSCRIBED, BOUNCED, COMPLAINED
+  preferencesJson   Json       // { frequency: 'weekly', categories: [...] }
+  createdAt         DateTime  @default(now())
+}
+
+model Segment {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  
+  name              String
+  queryJson         Json       // M4 Requirement: Query Definition
+  
+  createdAt         DateTime  @default(now())
+}
+
+model Campaign {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  subject           String
+  bodyJson          Json       // M4 Requirement: Reuse Content Blocks
+  status            String    // DRAFT, SCHEDULED, SENDING, SENT, FAILED
+  scheduledFor       DateTime?
+  createdAt         DateTime  @default(now())
+}
+
+model SendJob {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  campaignId        Int
+  status            String    // QUEUED, PROCESSING, SENT, FAILED
+  total             Int
+  sent              Int       @default(0)
+  failed            Int       @default(0)
+  providerBatchId   String?
+  
+  createdAt         DateTime  @default(now())
+}
+
+model SendEvent {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  campaignId        Int
+  subscriberId      Int
+  
+  type              String    // DELIVERED, OPEN, CLICK, BOUNCE, UNSUB, COMPLAINED
+  occurredAt        DateTime  @default(now())
+  metaJson          Json       // { ... }
+}
+
+model SuppressionList {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  email             String    @unique([tenantId, email])
+  reason            String    // BOUNCE, COMPLAINED, MANUAL
+  createdAt         DateTime  @default(now())
+}
+
+// --- PLUGINS (A) ---
+
+model Plugin {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  name              String    @unique([tenantId, name])
+  version           String
+  manifestJson      Json       // { slots: [], permissions: [], capabilities: [] }
+  status            String    // ACTIVE, INACTIVE, SUSPENDED
+  signedHash        String    // D5 Requirement: Signed hash
+  createdAt         DateTime  @default(now())
+}
+
+model PluginInstallation {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  pluginId          Int
+  configJson        Json       // Workspace-specific config
+  enabled           Boolean
+  createdAt         DateTime  @default(now())
+}
+
+// --- ANALYTICS & AUDIT (A) ---
+
+model EventsRaw {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  type              String    // article.view, user.login, etc.
+  occurredAt        DateTime
+  actorId           Int?
+  objectId          Int?
+  objectType        String?
+  propertiesJson    Json       // { ... }
+  created_at        DateTime  @default(now())
+}
+
+model MetricsDaily {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  date              DateTime  @db.Date
+  key               String    // article.views, users.daily_active
+  valueJson         Json       // { count: 123, ... }
+  
+  @@unique([tenantId, date, key]) // M5: Aggregates
+}
+
+model ContentStatsDaily {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  objectId          Int       // Article ID
+  date              DateTime  @db.Date
+  views             Int       @default(0)
+  readTime          Float?
+  conversionsJson   Json?       // { total: 10 }
+  
+  @@unique([tenantId, objectId, date])
+}
+
+model AuditLog {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  actorUserId       Int?
+  action            String    // article.create, session.revoke, etc.
+  resource          String    // Article:123, User:456
+  payload           Json       // { ip, ua, before, after, ... }
+  requestId         String?   // Trace ID
+  createdAt         DateTime  @default(now())
+}
+
+model PaywallRule {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  workspaceId        Int
+  name              String
+  ruleJson          Json       // { if: "!user.has_entitlement('pro')", then: "deny" }
+  active            Boolean    @default(true)
+  createdAt         DateTime  @default(now())
+}
+
+model AccessLog {
+  id                Int       @id @default(autoincrement())
+  tenantId          Int
+  userId            Int       // Subject
+  actorUserId       Int       // Who accessed
+  action            String    // READ, EXPORT
+  resource          String    // User:456, Data:Logs
+  reason            String?
+  createdAt         DateTime  @default(now())
+}
+
+// --- IDENTITY (A) ---
+
+model User {
+  id                Int       @id @default(autoincrement())
+  email             String
+  name              String
+  passwordHash      String
+  subscriptionTier  String    @default("FREE") // M3: Derived from Billing
+  
+  createdAt         DateTime  @default(now())
+}
+
+model Session {
+  id                Int       @id @default(autoincrement())
+  userId            Int
+  deviceId          String?   // D10: Device Trust
+  refreshTokenHash   String?   // M10: Hardening
+  ipAddress         String?
+  userAgent         String?   // M10: Logging
+  expiresAt         DateTime  @default(now())
+}
+
+model UserDevice {
+  id                Int       @id @default(autoincrement())
+  userId            Int
+  deviceId          String    @unique // Unique Device ID per user
+  isTrusted         Boolean    @default(false)
+  
+  lastSeenAt        DateTime?
+}

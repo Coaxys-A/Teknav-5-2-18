@@ -1,0 +1,274 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Post {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  authorId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Article {
+  id        String   @id @default(cuid())
+  slug            String   @unique
+  status          String   @default("draft")
+  seoTitle       String?
+  seoDescription String?
+  seoKeywords    String?
+  featuredImage  String?
+  publishedAt     DateTime?
+  scheduledFor  DateTime?
+  authorId        String?
+  seoScore       Float?
+  aiScore        Float?
+  viewCount       Int      @default(0)
+  settings        String   @default("{}")
+  metadata       String   @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model ArticleTranslation {
+  id          String   @id @default(cuid())
+  articleId   String
+  localeCode  String
+  title       String
+  content     String
+  excerpt     String?
+  status      String   @default("draft")
+  seoTitle    String?
+  seoDescription String?
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ArticleStatsDaily {
+  id              String   @id @default(cuid())
+  articleId       String
+  date            DateTime
+  viewCount       Int      @default(0)
+  readCount       Int      @default(0)
+  shareCount      Int      @default(0)
+  clickCount     Int      @default(0)
+  averageReadTime Int      @default(0)
+  bounceRate      Float?
+  metrics         String   @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([articleId])
+  @@index([date])
+}
+
+model SearchDocument {
+  id              String   @id @default(cuid())
+  articleId       String
+  localeCode      String
+  title           String
+  bodyExcerpt     String
+  tags            String   @default("[]")
+  categories      String   @default("[]")
+  boostedScore    Float    @default(1.0)
+  published       Boolean  @default(false)
+  publishedAt     DateTime?
+  workspaceId     String?
+  tenantId      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([articleId, localeCode])
+  @@index([articleId])
+  @@index([localeCode])
+  @@index([published])
+  @@index([workspaceId])
+  @@index([tenantId])
+}
+
+model SearchQueryStatsDaily {
+  id                String   @id @default(cuid())
+  queryText         String
+  date              DateTime
+  locale            String   @default("fa")
+  searchCount       Int      @default(0)
+  clickThroughRate  Float?
+  zeroResultsRate  Float?
+  avgResultsCount  Float?
+  topResults        String   @default("[]")
+  metrics           String   @default("{}")
+  workspaceId       String?
+  tenantId          String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([queryText, date, locale, workspaceId])
+  @@index([date])
+  @@index([workspaceId])
+  @@index([tenantId])
+}
+
+model RecommendationVector {
+  id          String   @id @default(cuid())
+  articleId   String
+  vector      String   @default("[]")
+  dimension   Int
+  norm        Float
+  localeCode  String   @default("fa")
+  workspaceId String?
+  tenantId    String?
+  updatedAt   DateTime @default(now())
+
+  @@unique([articleId])
+  @@index([articleId])
+  @@index([localeCode])
+  @@index([workspaceId])
+}
+
+model MemoryNode {
+  id          String   @id @default(cuid())
+  label       String   @unique
+  type        String
+  payload     String   @default("{}")
+  contextTags String   @default("[]")
+  workspaceId String?
+  tenantId    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([type])
+  @@index([workspaceId])
+  @@index([tenantId])
+}
+
+model MemoryEmbedding {
+  id          String   @id @default(cuid())
+  memoryNodeId String
+  modality    String   @default("text")
+  vector      String   @default("[]")
+  dimension   Int
+  norm        Float
+  metadata    String   @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([memoryNodeId, modality])
+}
+
+model MemoryEdge {
+  id          String   @id @default(cuid())
+  fromNodeId  String
+  toNodeId   String
+  edgeType   String
+  weight     Float    @default(1.0)
+  metadata    String   @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   @updatedAt
+
+  @@index([fromNodeId])
+  @@index([toNodeId])
+  @index([edgeType])
+  @@index([weight])
+}
+
+model UserInterestVector {
+  id          String   @unique
+  userId      String
+  vector      String   @default("[]")
+  dimension   Int
+  norm        Float
+  metadata    String   @default("{}")
+  updatedAt   DateTime @updatedAt
+}
+
+model UserPreferenceVector {
+  id          String   @unique
+  userId      String
+  localeCode  String   @default("fa")
+  vector      String   @default("[]")
+  dimension   Int
+  norm        Float
+  metadata    String   @default("{}")
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId])
+  @@unique([userId, localeCode])
+}
+
+model UserEvent {
+  id          String   @id @default(cuid())
+  userId      String?
+  eventType   String
+  eventName   String?
+  metadata    String   @default("{}")
+  pageUrl     String?
+  sessionId   String?
+  workspaceId String?
+  tenantId    String?
+  createdAt   DateTime @default(now())
+}
+
+model AnalyticsEvent {
+  id          String   @id @default(cuid())
+  eventType   String
+  eventData   String   @default("{}")
+  userId      String?
+  sessionId   String?
+  workspaceId String?
+  tenantId    String?
+  createdAt   DateTime @default(now())
+}
+
+model AnalyticsAggregate {
+  id            String   @id @default(cuid())
+  eventType     String
+  period        String   // hour, day, week, month
+  periodStart   DateTime
+  periodEnd     DateTime
+  count         Int      @default(0)
+  metrics       String   @default("{}")
+  dimensions    String   @default("{}")
+  workspaceId   String?
+  tenantId      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([eventType, period, periodStart, periodEnd, workspaceId])
+  @@index([eventType])
+  @@index([periodStart, periodEnd])
+  @@index([workspaceId])
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  userId      String?
+  token       String   @unique
+  expiresAt   DateTime
+  ipAddress   String?
+  userAgent   String?
+  metadata    String   @default("{}")
+  createdAt   DateTime @default(now())
+  lastActiveAt DateTime @default(now())
+}
